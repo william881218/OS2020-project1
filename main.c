@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/syscall.h>
 #define SYSNO_GET_TIME 369
 #define SYSNO_PRINTK 396
@@ -34,9 +35,9 @@ int proc_assign_cpu(int pid, int core_num){
 
 	cpu_set_t cpu_mask;
 	CPU_ZERO(&cpu_mask);
-	CPU_SET(core, &cpu_mask);
+	CPU_SET(core_num, &cpu_mask);
 
-	if (sched_setaffinity(pid, sizeof(mask), &mask) < 0) {
+	if (sched_setaffinity(pid, sizeof(cpu_mask), &cpu_mask) < 0) {
 		perror("sched_setaffinity error");
 		exit(1);
 	}
@@ -60,6 +61,12 @@ int proc_exec(struct process proc)
 
 		for (int i = 0; i < proc.t_exec; i++) {
 			TIME_UNIT();
+            /*
+#ifdef DEBUG
+			if (i % 100 == 0)
+				fprintf(stderr, "%s: %d/%d\n", proc.name, i, proc.t_exec);
+#endif
+            */
 		}
 
         //get the finish time of the process
@@ -67,7 +74,7 @@ int proc_exec(struct process proc)
 
         //print the info in kernel then exit
 		sprintf(proc_info, "[project1] %d %lu.%09lu %lu.%09lu\n", getpid(), start_sec, start_nsec, end_sec, end_nsec);
-		syscall(PRINTK, proc_info);
+		syscall(SYSNO_PRINTK, proc_info);
 		exit(0);
 	}
 
@@ -104,6 +111,159 @@ int set_high_priority(int pid){
 }
 
 /*-------------------- process related function finished... -------------------------------*/
+
+/*-------------------- scheduling related function... -------------------------------*/
+
+#define FIFO 1
+#define RR 2
+#define SJF 3
+#define PSJF 4
+
+
+
+static int cur_time = 0; //current time
+static int t_last = 0; //denote the last context switch time for RR
+static int running = -1; //current running process, -1 for no process running
+static int finish_cnt = 0; //number of finished process
+
+//find the next process to be scheduled
+int next_process(struct process *proc, int process_num, int policy);
+
+int scheduling(struct process *proc, int process_num, int policy);
+
+void unit_time() { volatile unsigned long i; for(i=0;i<1000000UL;i++); }
+
+/* Sort processes by ready time */
+int cmp(const void *a, const void *b) {
+	return ((struct process *)a)->t_ready - ((struct process *)b)->t_ready;
+}
+
+int FIFO_next(struct process *proc, int process_num){
+    if (running != -1) return running;
+    int next_p = -1;
+    for(int i = 0; i < process_num; i++) {
+        if(proc[i].pid == -1 || proc[i].t_exec == 0)
+            continue;
+        if(next_p == -1 || proc[i].t_ready < proc[next_p].t_ready)
+            next_p = i;
+    }
+    return next_p;
+}
+
+int RR_next(struct process *proc, int process_num){
+    int next_p = -1;
+
+    if (running == -1) { //first one
+        for (int i = 0; i < process_num; i++) {
+            if (proc[i].pid != -1 && proc[i].t_exec > 0){
+                return i;
+            }
+        }
+    }else if ((cur_time - t_last) % 500 == 0)  {
+        next_p = (running + 1) % process_num;
+        while (proc[next_p].pid == -1 || proc[next_p].t_exec == 0)
+            next_p = (next_p + 1) % process_num;
+        return next_p;
+    }
+    //nothing happen, round robin continue...
+    return running;
+}
+
+int SJF_next(struct process *proc, int process_num, int P){ //P for PSJF
+    if (!P && running != -1) return running;
+    int next_p = -1;
+
+    for (int i = 0; i < process_num; i++) {
+        if (proc[i].pid == -1 || proc[i].t_exec == 0)
+            continue;
+        if (next_p == -1 || proc[i].t_exec < proc[next_p].t_exec)
+            next_p = i;
+    }
+    return next_p;
+}
+
+
+int scheduling(struct process *process_list, int process_num, int policy)
+{
+	qsort(process_list, process_num, sizeof(struct process), cmp);
+
+	/* Initial pid = -1 imply not ready */
+	for (int i = 0; i < process_num; i++)
+		process_list[i].pid = -1;
+
+	/* Set single core prevent from preemption */
+	proc_assign_cpu(getpid(), PARENT_CPU);
+
+	/* Set high priority to scheduler */
+	set_high_priority(getpid());
+
+	/* Initial scheduler */
+	cur_time = 0;
+	running = -1;
+	finish_cnt = 0;
+
+	while(1) {
+		//fprintf(stderr, "Current time: %d\n", cur_time);
+
+		/* Check if running process finish */
+		if (running != -1 && process_list[running].t_exec == 0) {
+
+#ifdef DEBUG
+			fprintf(stderr, "%s finish at time %d.\n", process_list[running].name, cur_time);
+#endif
+			//kill(running, SIGKILL);
+			waitpid(process_list[running].pid, NULL, 0);
+			printf("%s %d\n", process_list[running].name, process_list[running].pid);
+			fflush(stdout);
+			fsync(1);
+			running = -1;
+			finish_cnt++;
+
+			/* All process finish */
+			if (finish_cnt == process_num)
+				break;
+		}
+
+		/* Check if process ready and execute */
+		for (int i = 0; i < process_num; i++) {
+			if (process_list[i].t_ready == cur_time) {
+				process_list[i].pid = proc_exec(process_list[i]);
+				set_low_priority(process_list[i].pid);
+#ifdef DEBUG
+				fprintf(stderr, "%s ready at time %d.\n", process_list[i].name, cur_time);
+#endif
+			}
+
+		}
+
+		/* Select next running  process */
+        int next_p = -1;
+
+        if (policy == FIFO) next_p = FIFO_next(process_list, process_num);
+        else if (policy == RR) next_p = RR_next(process_list, process_num);
+        else if (policy == SJF) next_p = SJF_next(process_list, process_num, 0);
+        else if (policy == PSJF) next_p = SJF_next(process_list, process_num, 1);
+
+		if (next_p != -1){ //we need context switch
+			if (running != next_p) {
+				set_high_priority(process_list[next_p].pid);
+				set_low_priority(process_list[running].pid);
+				running = next_p;
+				t_last = cur_time;
+			}
+		}
+
+		/* Run an unit of time */
+		unit_time();
+		if (running != -1)
+			process_list[running].t_exec--;
+		cur_time++;
+	}
+
+	return 0;
+}
+
+/*-------------------- scheduling related function finished -------------------------------*/
 
 
 int main(int argc, char* argv[])
