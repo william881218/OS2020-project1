@@ -12,7 +12,7 @@
 #define SYSNO_PRINTK 396
 
 
-/*-------------------- for process related function... -------------------------------*/
+//-------------------- for process related function... -------------------------------
 
 #define CHILD_CPU 1
 #define PARENT_CPU 0
@@ -61,12 +61,6 @@ int proc_exec(struct process proc)
 
 		for (int i = 0; i < proc.t_exec; i++) {
 			TIME_UNIT();
-            /*
-#ifdef DEBUG
-			if (i % 100 == 0)
-				fprintf(stderr, "%s: %d/%d\n", proc.name, i, proc.t_exec);
-#endif
-            */
 		}
 
         //get the finish time of the process
@@ -78,7 +72,7 @@ int proc_exec(struct process proc)
 		exit(0);
 	}
 
-	/* Assign child to another core prevent from interupted by parant */
+	// Assign child to another core prevent from interupted by parant
 	proc_assign_cpu(pid, CHILD_CPU);
 
 	return pid;
@@ -110,9 +104,9 @@ int set_high_priority(int pid){
 	return ret;
 }
 
-/*-------------------- process related function finished... -------------------------------*/
+//-------------------- process related function finished... -------------------------------
 
-/*-------------------- scheduling related function... -------------------------------*/
+//-------------------- scheduling related function... -------------------------------
 
 #define FIFO 1
 #define RR 2
@@ -133,7 +127,7 @@ int scheduling(struct process *proc, int process_num, int policy);
 
 void unit_time() { volatile unsigned long i; for(i=0;i<1000000UL;i++); }
 
-/* Sort processes by ready time */
+// Sort processes by ready time
 int cmp(const void *a, const void *b) {
 	return ((struct process *)a)->t_ready - ((struct process *)b)->t_ready;
 }
@@ -187,17 +181,17 @@ int scheduling(struct process *process_list, int process_num, int policy)
 {
 	qsort(process_list, process_num, sizeof(struct process), cmp);
 
-	/* Initial pid = -1 imply not ready */
+	// Initial pid = -1 imply not ready
 	for (int i = 0; i < process_num; i++)
 		process_list[i].pid = -1;
 
-	/* Set single core prevent from preemption */
+	// Set single core prevent from preemption
 	proc_assign_cpu(getpid(), PARENT_CPU);
 
-	/* Set high priority to scheduler */
+	// Set high priority to scheduler
 	set_high_priority(getpid());
 
-	/* Initial scheduler */
+	// Initial scheduler
 	cur_time = 0;
 	running = -1;
 	finish_cnt = 0;
@@ -205,12 +199,8 @@ int scheduling(struct process *process_list, int process_num, int policy)
 	while(1) {
 		//fprintf(stderr, "Current time: %d\n", cur_time);
 
-		/* Check if running process finish */
+		// Check if running process finish
 		if (running != -1 && process_list[running].t_exec == 0) {
-
-#ifdef DEBUG
-			fprintf(stderr, "%s finish at time %d.\n", process_list[running].name, cur_time);
-#endif
 			//kill(running, SIGKILL);
 			waitpid(process_list[running].pid, NULL, 0);
 			printf("%s %d\n", process_list[running].name, process_list[running].pid);
@@ -219,24 +209,21 @@ int scheduling(struct process *process_list, int process_num, int policy)
 			running = -1;
 			finish_cnt++;
 
-			/* All process finish */
+			// All process finish
 			if (finish_cnt == process_num)
 				break;
 		}
 
-		/* Check if process ready and execute */
+		// Check if process ready and execute
 		for (int i = 0; i < process_num; i++) {
 			if (process_list[i].t_ready == cur_time) {
 				process_list[i].pid = proc_exec(process_list[i]);
 				set_low_priority(process_list[i].pid);
-#ifdef DEBUG
-				fprintf(stderr, "%s ready at time %d.\n", process_list[i].name, cur_time);
-#endif
 			}
 
 		}
 
-		/* Select next running  process */
+		// Select next running  process
         int next_p = -1;
 
         if (policy == FIFO) next_p = FIFO_next(process_list, process_num);
@@ -253,7 +240,7 @@ int scheduling(struct process *process_list, int process_num, int policy)
 			}
 		}
 
-		/* Run an unit of time */
+		// Run an unit of time
 		unit_time();
 		if (running != -1)
 			process_list[running].t_exec--;
@@ -263,7 +250,7 @@ int scheduling(struct process *process_list, int process_num, int policy)
 	return 0;
 }
 
-/*-------------------- scheduling related function finished -------------------------------*/
+//-------------------- scheduling related function finished -------------------------------
 
 
 int main(int argc, char* argv[])
